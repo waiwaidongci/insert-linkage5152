@@ -28,12 +28,21 @@ export async function reviewPage(route, refresh) {
   if (!id) return panel(spec.pages[4], empty('先完成一次运行，再复核结果。','#run',spec.pages[2]));
   const job = await workspace.getRun(id);
   if (!job.result) return panel(job.name, empty('当前运行没有可复核结果。',`#results/${job.id}`,'查看运行状态'));
+  const signOff = job.superseded
+    ? p('该版本已被更新版取代，签核以已发布的最新版本为准，旧版不再受理签核。','feedback')
+    : (job.review === 'pending' && (session.canReview ? reviewForm(job,spec,refresh) : p('等待业务负责人复核。','subtle')));
   return el('div', {class:'two-col'},
     panel(job.name, p(job.result.headline,'intro-copy'), p(job.result.note),
+      el('div',{class:'actions'},
+        job.revision && pill(`第 ${job.revision} 版`,'revision'),
+        pill(REVIEW[job.review],job.review),
+        job.published && pill('已发布','published'),
+        job.superseded && pill('已被新版取代','superseded')),
       link('查看计算证据',`#results/${id}`,{class:'quiet'}),
-      pill(REVIEW[job.review],job.review),
       job.review_note && el('div',{class:'decision'},p(job.decision),p(job.review_note)),
-      job.review === 'pending' && (session.canReview ? reviewForm(job,spec,refresh) : p('等待业务负责人复核。','subtle'))),
+      signOff),
     panel('可复核记录', el('ul',{class:'method-list'}, completed.map(run =>
-      el('li',{}, link(run.name,`#review/${run.id}`), ' ', pill(REVIEW[run.review],run.review))))));
+      el('li',{}, link(run.name,`#review/${run.id}`), ' ',
+        run.revision && pill(`第 ${run.revision} 版`,'revision'), ' ', pill(REVIEW[run.review],run.review),
+        run.superseded && pill('已取代','superseded'))))));
 }

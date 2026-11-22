@@ -28,6 +28,9 @@ class Run(Base):
     scheduled_at: Mapped[datetime | None]
     name: Mapped[str] = mapped_column(String(120))
     status: Mapped[str] = mapped_column(String(20), default=Status.QUEUED, index=True)
+    revision: Mapped[int | None] = mapped_column(index=True)
+    superseded: Mapped[bool] = mapped_column(default=False)
+    pair_progress: Mapped[dict | None] = mapped_column(JSON)
     params: Mapped[dict] = mapped_column(JSON)
     result: Mapped[dict | None] = mapped_column(JSON)
     error: Mapped[str | None] = mapped_column(String(500))

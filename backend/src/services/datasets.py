@@ -4,9 +4,10 @@ import io
 import json
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from src.domain import analysis
 from src.domain.demo import demo_rows
 from src.domain.spec import SPEC
-from src.models.source import Dataset
+from src.models.source import Dataset, DatasetRevision
 
 
 def checksum(rows):
@@ -15,6 +16,8 @@ def checksum(rows):
 
 
 def save(db, name, filename, rows, actor):
+    # 统一规范化（去空白、特征排序去重），保证各版快照按同一口径比对改动。
+    rows = analysis.validate_rows(rows)
     signature = checksum(rows)
     lookup = select(Dataset).where(Dataset.name == name, Dataset.checksum == signature)
     existing = db.scalar(lookup)
@@ -26,6 +29,8 @@ def save(db, name, filename, rows, actor):
         with db.begin_nested():
             db.add(dataset)
             db.flush()
+            db.add(DatasetRevision(dataset_id=dataset.id, revision=1, checksum=signature,
+                                   rows=rows, row_count=len(rows), author=actor))
     except IntegrityError:
         existing = db.scalar(lookup.with_for_update())
         if existing:

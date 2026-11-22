@@ -9,7 +9,7 @@ from src.controllers.auth import allow, current
 from src.domain.spec import SPEC
 from src.models.identity import User
 from src.models.jobs import Run
-from src.models.source import Dataset
+from src.models.source import Dataset, DatasetRevision, PublishedRevision
 from src.schemas.requests import ReviewRequest, RunRequest
 from src.services.audit import record
 from src.services.validation import normalize_params
@@ -28,18 +28,29 @@ def require_job(db, run_id, lock=False):
 
 @router.get('')
 def index(db: Session = Depends(connection), actor: User = Depends(current)):
-    return [views.run(item) for item in db.scalars(select(Run).order_by(Run.id.desc()).limit(100))]
+    items = db.scalars(select(Run).order_by(Run.id.desc()).limit(100)).all()
+    published_map = {
+        pointer.dataset_id: pointer.revision
+        for pointer in db.scalars(select(PublishedRevision)).all()
+    }
+    return [views.run(item, published_map=published_map) for item in items]
 
 
 @router.post('', status_code=202)
 def create(body: RunRequest, db: Session = Depends(connection),
            actor: User = Depends(allow(Role.ADMIN, Role.ANALYST))):
-    if not db.get(Dataset, body.dataset_id):
+    dataset = db.get(Dataset, body.dataset_id)
+    if not dataset:
         raise HTTPException(404, '找不到指定的数据批次')
-    item = Run(name=body.name, dataset_id=body.dataset_id, params=normalize_params(body.params), author=actor.username)
+    revision = db.scalar(select(DatasetRevision.revision)
+                         .where(DatasetRevision.dataset_id == dataset.id)
+                         .order_by(DatasetRevision.revision.desc()).limit(1))
+    item = Run(name=body.name, dataset_id=body.dataset_id, revision=revision,
+               params=normalize_params(body.params), author=actor.username)
     db.add(item)
     db.flush()
-    record(db, actor.username, 'analysis.queued', item.id, dataset_id=item.dataset_id)
+    record(db, actor.username, 'analysis.queued', item.id, dataset_id=item.dataset_id,
+           revision=item.revision)
     db.commit()
     wake()
     return views.run(item, detail=True)
@@ -47,7 +58,10 @@ def create(body: RunRequest, db: Session = Depends(connection),
 
 @router.get('/{run_id}')
 def detail(run_id: int, db: Session = Depends(connection), actor: User = Depends(current)):
-    return views.run(require_job(db, run_id), detail=True)
+    item = require_job(db, run_id)
+    pointer = db.get(PublishedRevision, item.dataset_id)
+    published_map = {item.dataset_id: pointer.revision} if pointer else {}
+    return views.run(item, detail=True, published_map=published_map)
 
 
 @router.get('/{run_id}/export')
@@ -67,6 +81,8 @@ def review(run_id: int, body: ReviewRequest, db: Session = Depends(connection),
     item = require_job(db, run_id, lock=True)
     if item.status != Status.COMPLETE or item.review != Review.PENDING:
         raise HTTPException(409, '只有已完成且待复核的记录可以提交决定')
+    if item.superseded:
+        raise HTTPException(409, '该版本已被更新版取代，签核以已发布的最新版本为准')
     if body.review == Review.PENDING:
         raise ValueError('请选择通过或退回')
     if body.review == Review.ACCEPTED and not body.decision:

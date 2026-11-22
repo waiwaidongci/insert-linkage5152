@@ -4,11 +4,14 @@ from array import array
 from dataclasses import dataclass
 from heapq import heapify, heappop, heappush, heapreplace
 from itertools import product
+from math import isclose
 
 from .spec import SPEC
 
 
 _PAIR_LIMIT = 50
+# 距离经 JSON/数据库往返后可能有位级浮点误差，取证时按紧容差比对。
+_DISTANCE_TOL = 1e-12
 _CUT = SPEC["params"][0]
 _PAIR_COLUMNS = (
     ("left_id", "左侧规格"), ("right_id", "右侧规格"), ("distance", "Jaccard 距离"),
@@ -59,31 +62,50 @@ def _cut_distance(params):
     return cut
 
 
-def _jaccard(left, right):
+def prepare_records(rows):
+    """规范化并按规格编号排序，拆分出名称与适配特征集合。"""
+    records = sorted(validate_rows(rows), key=lambda row: row["spec_id"].casefold())
+    ids = [row["spec_id"] for row in records]
+    names = [row["name"] for row in records]
+    traits = [set(row["fit_traits"].split("|")) for row in records]
+    return records, ids, names, traits
+
+
+def jaccard(left, right):
     shared = len(left & right)
     union = len(left) + len(right) - shared
     return (union - shared) / union
 
 
-def _pair_distances(traits, cut):
-    """建立下三角距离矩阵，同时保留最远的超线规格对。"""
+def pair_distance(traits, left, right):
+    return jaccard(traits[left], traits[right])
+
+
+def distance_matrix(traits):
+    """下三角距离矩阵，matrix[right][left] 为两规格的 Jaccard 距离。"""
     matrix = []
-    incompatible = []
-    count = 0
-    for right, right_traits in enumerate(traits):
+    for right in range(len(traits)):
         distances = array("d")
         for left in range(right):
-            distance = _jaccard(traits[left], right_traits)
-            distances.append(distance)
-            if distance > cut:
+            distances.append(pair_distance(traits, left, right))
+        matrix.append(distances)
+    return matrix
+
+
+def _incompatible_pairs(matrix, cut):
+    """保留距离最高的至多 50 个超线规格对。"""
+    incompatible = []
+    count = 0
+    for right, distances in enumerate(matrix):
+        for left, height in enumerate(distances):
+            if height > cut:
                 count += 1
-                priority = (distance, -left, -right)
+                priority = (height, -left, -right)
                 if len(incompatible) < _PAIR_LIMIT:
                     heappush(incompatible, priority)
                 elif priority > incompatible[0]:
                     heapreplace(incompatible, priority)
-        matrix.append(distances)
-    return matrix, count, [(-left, -right, height) for height, left, right in sorted(incompatible, reverse=True)]
+    return count, [(-left, -right, height) for height, left, right in sorted(incompatible, reverse=True)]
 
 
 def _traits_text(traits):
@@ -118,10 +140,11 @@ def _hierarchy(matrix, ids, traits, cut):
 
         if height > cut and cut_clusters is None:
             cut_clusters = list(active.values())
-        left_cluster, right_cluster = active[left], active.pop(right)
-        witness_left, witness_right = next(
+        left_cluster, right_cluster = active.pop(right), active[left]
+        # 矩阵中的距离可能来自上一版缓存，按紧容差找回等距见证规格对。
+        witness_left, witness_right = min(
             (a, b) for a, b in product(left_cluster.members, right_cluster.members)
-            if _jaccard(traits[a], traits[b]) == height
+            if isclose(jaccard(traits[a], traits[b]), height, rel_tol=_DISTANCE_TOL, abs_tol=_DISTANCE_TOL)
         )
         step = len(merges) + 1
         parent = _Cluster(
@@ -159,14 +182,9 @@ def _table(title, columns, rows):
     return {"title": title, "columns": [{"key": key, "label": label} for key, label in columns], "rows": rows}
 
 
-def analyze(rows, normalized_params):
-    """返回框架通用结果，切线比较包含等号且使用未舍入的距离。"""
-    records = sorted(validate_rows(rows), key=lambda row: row["spec_id"].casefold())
-    cut = _cut_distance(normalized_params)
-    ids = [row["spec_id"] for row in records]
-    names = [row["name"] for row in records]
-    traits = [set(row["fit_traits"].split("|")) for row in records]
-    matrix, pair_count, incompatible = _pair_distances(traits, cut)
+def build_result(ids, names, traits, matrix, cut, progress=None):
+    """从距离矩阵出发执行切树，整批重算与批次更正共用同一条算法链路。"""
+    pair_count, incompatible = _incompatible_pairs(matrix, cut)
     clusters, merges = _hierarchy(matrix, ids, traits, cut)
     groups = [_cluster_row(index, cluster, ids, names, traits) for index, cluster in enumerate(clusters, start=1)]
     pairs = [_pair_row(ids, traits, left, right, height) for left, right, height in incompatible]
@@ -174,6 +192,11 @@ def analyze(rows, normalized_params):
     note = f"距离切线为 {cut}，含等于切线的归并。"
     if pair_count > len(pairs):
         note += f"超线清单展示距离最高的 {len(pairs)} 对，共有 {pair_count} 对超线。"
+    if progress:
+        note += (
+            f"本版重算 {progress['recomputed']} 个规格对，"
+            f"沿用上一版 {progress['reused']} 个未受影响的规格对。"
+        )
     rerun = "按候选组核对共有特征和规格间差异，记录实物打样结论。"
     if kept < len(merges):
         boundary = merges[kept]
@@ -182,7 +205,7 @@ def analyze(rows, normalized_params):
             f"{boundary['left_id']} 与 {boundary['right_id']} 的距离为 {boundary['distance']:.6g}。"
             "核对两侧独有特征，修订台账或切线后可重跑。"
         )
-    return {
+    result = {
         "state": "warning" if pair_count else "ok",
         "headline": f"{len(ids)} 条内衬规格切出 {len(groups)} 个候选组。",
         "note": note,
@@ -209,3 +232,17 @@ def analyze(rows, normalized_params):
         }],
         "sections": [{"title": "切树复核与重跑", "text": rerun}],
     }
+    if progress:
+        result["metrics"].append({
+            "label": "本版重算规格对", "value": progress["recomputed"],
+            "detail": f"至少一端较前版有改动；{progress['reused']} 个规格对沿用前版",
+        })
+    return result
+
+
+def analyze(rows, normalized_params):
+    """返回框架通用结果，切线比较包含等号且使用未舍入的距离。"""
+    _records, ids, names, traits = prepare_records(rows)
+    cut = _cut_distance(normalized_params)
+    matrix = distance_matrix(traits)
+    return build_result(ids, names, traits, matrix, cut)

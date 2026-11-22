@@ -18,5 +18,7 @@ export const workspace = {
   deliveries: () => call('/deliveries'),
   schedule: data => call('/schedules', data),
   disable: id => call(`/schedules/${id}/disable`, {}),
+  revisions: id => call(`/datasets/${id}/revisions`),
+  registerRevision: (id, data) => call(`/datasets/${id}/revisions`, data),
   download: (path, filename) => saveFile(path, session.token, filename),
 };
