@@ -140,7 +140,7 @@ def _hierarchy(matrix, ids, traits, cut):
 
         if height > cut and cut_clusters is None:
             cut_clusters = list(active.values())
-        left_cluster, right_cluster = active.pop(right), active[left]
+        left_cluster, right_cluster = active[left], active.pop(right)
         # 矩阵中的距离可能来自上一版缓存，按紧容差找回等距见证规格对。
         witness_left, witness_right = min(
             (a, b) for a, b in product(left_cluster.members, right_cluster.members)
