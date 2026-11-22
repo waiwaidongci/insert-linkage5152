@@ -4,14 +4,11 @@ from array import array
 from dataclasses import dataclass
 from heapq import heapify, heappop, heappush, heapreplace
 from itertools import product
-from math import isclose
 
 from .spec import SPEC
 
 
 _PAIR_LIMIT = 50
-# 距离经 JSON/数据库往返后可能有位级浮点误差，取证时按紧容差比对。
-_DISTANCE_TOL = 1e-12
 _CUT = SPEC["params"][0]
 _PAIR_COLUMNS = (
     ("left_id", "左侧规格"), ("right_id", "右侧规格"), ("distance", "Jaccard 距离"),
@@ -120,7 +117,8 @@ def _pair_row(ids, traits, left, right, distance):
     }
 
 
-def _hierarchy(matrix, ids, traits, cut):
+def _hierarchy(distances, ids, traits, cut):
+    matrix = [row[:] for row in distances]
     active = {i: _Cluster(f"规格 {spec_id}", (i,)) for i, spec_id in enumerate(ids)}
     nearest = [(-1.0, i, i) for i in range(len(ids) - 1)]
     heapify(nearest)
@@ -141,10 +139,10 @@ def _hierarchy(matrix, ids, traits, cut):
         if height > cut and cut_clusters is None:
             cut_clusters = list(active.values())
         left_cluster, right_cluster = active[left], active.pop(right)
-        # 矩阵中的距离可能来自上一版缓存，按紧容差找回等距见证规格对。
-        witness_left, witness_right = min(
+        # 见证对直接使用叶节点距离，避免重新计算已缓存的规格对。
+        witness_left, witness_right = next(
             (a, b) for a, b in product(left_cluster.members, right_cluster.members)
-            if isclose(jaccard(traits[a], traits[b]), height, rel_tol=_DISTANCE_TOL, abs_tol=_DISTANCE_TOL)
+            if distances[max(a, b)][min(a, b)] == height
         )
         step = len(merges) + 1
         parent = _Cluster(

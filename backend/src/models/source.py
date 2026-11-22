@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import JSON, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Double, JSON, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from src.config.database import Base
 from src.utils.time import now
@@ -42,7 +42,7 @@ class PairDistance(Base):
     revision: Mapped[int] = mapped_column()
     left_index: Mapped[int] = mapped_column()
     right_index: Mapped[int] = mapped_column()
-    distance: Mapped[float] = mapped_column()
+    distance: Mapped[float] = mapped_column(Double)
 
 class PublishedRevision(Base):
     """每个批次的已发布版本指针，每批至多一条，只接受更新的版本。"""

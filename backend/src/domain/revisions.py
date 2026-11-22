@@ -46,7 +46,8 @@ def register_revision(db, dataset, rows, actor):
 
 
 def _spec_index(records):
-    return {row["spec_id"].casefold(): index for index, row in enumerate(records)}
+    keys = sorted(row["spec_id"].casefold() for row in records)
+    return {key: index for index, key in enumerate(keys)}
 
 
 def affected_pairs(previous, current):
@@ -85,22 +86,22 @@ def _recompute_plan(db, run, ids, traits, current_stored):
     返回矩阵与本版的重算/沿用计数。current_stored 中已存在的规格对是本版
     检查点已算完的，直接沿用、不计入本次重算。
     """
+    matrix = [array("d", [0.0]) * index for index in range(len(ids))]
     if run.revision == 1:
-        matrix = analysis.distance_matrix(traits)
-        recomputed = reused = 0
+        recomputed = 0
         for right, distances in enumerate(matrix):
             for left in range(len(distances)):
                 if (left, right) in current_stored:
-                    matrix[right][left] = current_stored[(left, right)]
+                    distances[left] = current_stored[(left, right)]
                 else:
+                    distances[left] = analysis.pair_distance(traits, left, right)
                     recomputed += 1
-        return matrix, recomputed, reused
+        return matrix, recomputed, 0
     previous = db.get(DatasetRevision, (run.dataset_id, run.revision - 1)).rows
     current = db.get(DatasetRevision, (run.dataset_id, run.revision)).rows
     before_index = _spec_index(previous)
     _changed, targets = affected_pairs(previous, current)
     cached = _stored_pairs(db, run.dataset_id, run.revision - 1)
-    matrix = analysis.distance_matrix(traits)
     recomputed = reused = 0
     for right in range(len(ids)):
         for left in range(right):
@@ -138,7 +139,7 @@ def ensure_pair_distances(db, run):
                 db.add(PairDistance(dataset_id=run.dataset_id, revision=run.revision,
                                     left_index=left, right_index=right, distance=height))
     if run.revision == 1:
-        total = sum(range(1, len(ids) + 1))
+        total = len(ids) * (len(ids) - 1) // 2
         progress = None if not stored else {"recomputed": recomputed, "reused": total - recomputed}
     else:
         progress = {"recomputed": recomputed, "reused": reused}
